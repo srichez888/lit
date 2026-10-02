@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lit v5 – 100% JSCAD (viewer + export STL)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a2e; font-family: Arial, sans-serif; }
+        #viewer { position: fixed; inset: 0; cursor: grab; }
+        #viewer:active { cursor: grabbing; }
+        #viewer canvas { display: block; }
+        #info {
+            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+            color: #fff; background: rgba(0,0,0,0.6); padding: 12px 24px;
+            border-radius: 8px; font-size: 16px; pointer-events: none;
+            text-align: center; z-index: 10;
+        }
+        #controls {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            color: #aaa; background: rgba(0,0,0,0.5); padding: 8px 16px;
+            border-radius: 20px; font-size: 13px; pointer-events: none; z-index: 10;
+        }
+        #options-container {
+            position: absolute; top: 50%; left: 16px; transform: translateY(-50%);
+            color: #fff; background: rgba(0,0,0,0.75); padding: 12px 14px;
+            border-radius: 12px; font-size: 13px; z-index: 10;
+            display: flex; flex-direction: column; align-items: flex-start;
+            gap: 10px; pointer-events: auto; backdrop-filter: blur(4px);
+            max-height: 90vh; overflow-y: auto; width: 220px;
+        }
+        #options-container label {
+            cursor: pointer; display: flex; align-items: center; gap: 6px;
+        }
+        #options-container input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+        #checkbox-container { display: flex; align-items: center; gap: 12px; }
+        .slider-group {
+            display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
+        }
+        .slider-group label { font-size: 12px; color: #ccc; white-space: nowrap; }
+        .slider-group input[type="range"] { width: 120px; cursor: pointer; }
+        .slider-group .val { font-size: 11px; color: #99ff99; min-width: 40px; }
+        .cost-line {
+            width: 100%; text-align: left; border-top: 1px solid rgba(255,255,255,0.15);
+            padding-top: 8px; margin-top: 4px;
+        }
+        #exportStl {
+            width: 100%; padding: 8px; cursor: pointer; margin-top: 2px;
+            background: #234a23; color: #99ff99; border: 1px solid #4a7a4a;
+            border-radius: 8px; font-size: 13px; font-weight: bold;
+        }
+        #exportStl:hover { background: #2f5c2f; }
+        #exportStl:active { background: #1a3a1a; }
+        #viewer canvas { width: 100%; height: 100%; }
+
+        @media print {
+            @page { size: A4 landscape; margin: 8mm; }
+            html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            html, body { background: #fff !important; }
+            body { overflow: visible; height: auto; }
+            /* en mode fiche seule, pas de zone de viewer : evite une page vide/noire a la fin */
+            body.print-sheet { min-height: 0; }
+            /* le viewer garde un ratio fixe (le canvas est redimensionne depuis son conteneur) */
+            #viewer { position: relative; inset: auto; width: 100%; aspect-ratio: 16 / 10; cursor: default; break-inside: avoid; }
+            #info { position: static; transform: none; margin: 0 auto 6px; width: fit-content; background: #fff; color: #000; }
+            #controls, #exportStl { display: none; }
+            /* boite d infos : fond blanc, texte noir (les couleurs inline du JS sont forcees) */
+            #options-container {
+                position: static; transform: none; width: auto; max-height: none; overflow: visible;
+                margin-top: 8px; backdrop-filter: none; break-inside: avoid;
+                background: #fff; color: #000; border: 1px solid #999; border-radius: 0;
+            }
+            #options-container *, .slider-group label, .slider-group .val { color: #000 !important; }
+            #options-container .cost-line { border-top: 1px solid #999; }
+            #options-container input, #checkbox-container { display: none; }
+            /* version "boite seule" (bouton Imprimer la fiche) : sans le viewer */
+            body.print-sheet #viewer, body.print-sheet #info { display: none; }
+            body.print-sheet #options-container { margin-top: 0; font-size: 12pt; border: none; columns: 2; column-gap: 24px; }
+        }
+        #printSheet {
+            width: 100%; padding: 8px; cursor: pointer; margin-top: 2px;
+            background: #1f2f4a; color: #9ec5ff; border: 1px solid #4a6a9a;
+            border-radius: 8px; font-size: 13px; font-weight: bold;
+        }
+        #printSheet:hover { background: #2a4066; }
+        @media print { #printSheet { display: none; } }
+    </style>
+</head>
+<body>
+
+<div id="viewer"></div>
+
+<div id="info">🪵 Planché Garapa 140×21 + Structure lambourdes Douglas 60×40 · 100% JSCAD</div>
+<div id="controls">🖱️ Glisser pour tourner · Molette pour zoomer</div>
+
+<div id="options-container">
+    <div id="checkbox-container"><label><input type="checkbox" id="showPlanks"> Planché</label></div>
+    <div id="checkbox-container"><label><input type="checkbox" id="showFrame" checked> Lambourdes</label></div>
+    <div id="checkbox-container"><label><input type="checkbox" id="showMattress"> Matelas</label></div>
+    <div class="slider-group">
+        <label>Hauteur sous plancher</label>
+        <input type="range" id="sliderFootH" min="20" max="45" value="44">
+        <span class="val" id="valFootH">44 cm</span>
+    </div>
+    <div class="slider-group">
+        <label>Longueur planche</label>
+        <input type="range" id="sliderPlankLen" min="60" max="160" step="0.2" value="100.2">
+        <span class="val" id="valPlankLen">100.2 cm</span>
+    </div>
+    <div class="slider-group">
+        <label>Largeur lit</label>
+        <input type="range" id="sliderBedW" min="80" max="140" value="90">
+        <span class="val" id="valBedW">90 cm</span>
+    </div>
+    <div class="slider-group">
+        <label>Longueur lit</label>
+        <input type="range" id="sliderBedL" min="140" max="240" step="0.2" value="205.4">
+        <span class="val" id="valBedL">205.4 cm</span>
+    </div>
+    <div style="width:100%;text-align:left;">
+        <span style="color:#ffdd99;font-size:11px;" id="plankInfo">--</span>
+    </div>
+    <div class="cost-line">
+        <span style="color:#ffd700;font-size:12px;font-weight:bold;" id="costDisplay">Bois: --</span>
+    </div>
+    <button id="printSheet" title="Imprime la fiche (liste de coupe + coût + dimensions) sur fond blanc">🖨 Imprimer la fiche</button>
+    <button id="exportStl" title="Télécharge le bois (structure + planches) en STL binaire, mm, échelle réelle">⬇ Export STL (mm)</button>
+</div>
+
+<script type="importmap">
+{
+    "imports": {
+        "@jscad/modeling": "https://cdn.jsdelivr.net/npm/@jscad/modeling@2/+esm",
+        "@jscad/regl-renderer": "https://cdn.jsdelivr.net/npm/@jscad/regl-renderer@2/+esm",
+        "@jscad/stl-serializer": "https://cdn.jsdelivr.net/npm/@jscad/stl-serializer@2/+esm"
+    }
+}
+</script>
+
+<script type="module">
+// ======================================================================
+// Lit v5 — Une seule bibliothèque : JSCAD
+//   - BedModel      : géométrie paramétrique (pur JS, aucune dépendance)
+//   - regl-renderer : affichage 3D (les mêmes solides que l'export)
+//   - stl-serialize : export STL binaire (mm, échelle réelle)
+// Conventions : BedModel en cm, axe Y vers le haut.
+// Le viewer et le STL convertissent Y-up -> Z-up au même endroit.
+// ======================================================================
+
+import * as modelingNS from '@jscad/modeling';
+import * as reglNS from '@jscad/regl-renderer';
+import * as stlNS from '@jscad/stl-serializer';
+
+const modeling = modelingNS.modeling || modelingNS.default || modelingNS;
+const regl = reglNS.prepareRender ? reglNS : reglNS.default;
+const stlSer = stlNS.serialize ? stlNS : stlNS.default;
+
+const { primitives, booleans, colors, transforms, extrusions } = modeling;
+const { prepareRender, drawCommands, cameras, entitiesFromSolids } = regl;
+const serializeSTL = stlSer.serialize || stlSer.default || stlSer;
+
+// ======================================================================
+// LAYER 1: BedModel — pure geometry, no library dependency
+// ======================================================================
+
+class BedModel {
+    constructor() {
+        this.params = {
+            W_total: 90,
+            L: 205.4,
+            plankLen: 100.2,
+            totalHeight: 44,
+            retrait: 3,
+            inclinaisonTete: 15,   // degres d inclinaison de la tete de lit
+        };
+        this.constants = {
+            plankLar: 14,
+            plankThick: 2.1,
+            lamW: 4,
+            lamT: 6,
+            mattressW: 90,
+            mattressH: 20,
+            mattressL: 200,
+        };
+        this.pieces = [];
+    }
+
+    recalc() {
+        const { W_total, L, plankLen, totalHeight, retrait } = this.params;
+        const { plankLar, plankThick, lamW, lamT, mattressW, mattressH, mattressL } = this.constants;
+
+        // Chaine verticale : dessous des planches = totalHeight
+        // Cadre Douglas INCHANGE (comme avant les ailes) ; les 2 ailes Garapa de chaque pied
+        // se posent sur les faces EXTERNES du montant, connectees a 90 deg (debord de 2.1 cm voulu).
+        const railY = totalHeight - lamT / 2;
+        const vertH = totalHeight - lamT;            // montants (sous les traverses hautes)
+        const vertY = vertH / 2;
+        const aileH = totalHeight;                   // ailes pleine hauteur, affleurantes au plateau
+        const aileY = aileH / 2;
+        const basW = 8;                              // largeur des ailes au sol (retrecies vers le bas)
+        const lamX = W_total / 2 - lamW / 2;         // rails G/D + montants affleurants aux cotes
+        const endZ = L / 2 - lamW / 2;               // traverses hautes affleurants aux bouts
+        const plankCenterY = totalHeight + plankThick / 2;
+        const mattressY = totalHeight + plankThick + mattressH / 2;
+
+        const pieces = [];
+
+        // --- Lambourdes (3, dans la longueur, sous le plancher) ---
+        // Longueur reelle L (nomenclature + STL, mi-bois avec la traverse) ; affichage raccourci
+        // (dispSize : butent contre la traverse) pour que le jeu cree une separation visible
+        // G/D : prolongees jusqu a la charniere de tete (ajoutees plus bas, apres calcul de la tete)
+        [{ k: 'M', x: 0 }].forEach(r => {
+            pieces.push({ name: 'lambourde_' + r.k, category: 'frame', material: 'douglas',
+                size: [lamW, lamT, L], dispSize: [lamW, lamT, L - 2 * lamW], position: [r.x, railY, 0] });
+        });
+
+        // --- Traverses hautes (bornent les lambourdes aux extremites) ---
+        [-endZ, endZ].forEach((z, i) => {
+            pieces.push({ name: 'traverse_haute_' + (i === 0 ? 'tete' : 'pied'), category: 'frame', material: 'douglas',
+                size: [W_total, lamT, lamW], position: [0, railY, z],
+                // les 2 traverses sont identiques : les lambourdes G/D les traversent (mi-bois) ; fente autour
+                // de chaque lambourde pour que les deux bois ne fusionnent pas visuellement (viewer seulement)
+                viewNotches: [-lamX, lamX].map(x => ({ c: [x, railY, z], s: [lamW + 0.2, lamT + 2, lamW + 2] })) });
+        });
+
+        // --- Pieds : montant (cadre inchange) + 2 ailes Garapa en TRAPEZES (vue de dessus),
+        // raccordees par un onglet a 45 deg au coin externe ---
+        [{ s: -1, end: 'tete' }, { s: 1, end: 'pied' }].forEach(e => {
+            [-1, 1].forEach((sx, i) => {
+                const flip = sx * e.s < 0;   // miroir -> inversion du winding des faces
+                pieces.push({ name: 'montant_' + e.end + '_' + (i === 0 ? 'G' : 'D'), category: 'frame', material: 'douglas',
+                    size: [lamW, vertH, lamT], position: [sx * lamX, vertY, e.s * (L / 2 - lamT / 2)] });
+                pieces.push({ name: 'aile_' + e.end + '_' + (i === 0 ? 'G' : 'D') + '_bout', category: 'frame', material: 'garapa',
+                    size: [plankLar, aileH, plankThick],
+                    // cote tete : encoche pour laisser passer la lambourde G/D prolongee (ouverte vers le haut)
+                    notch: e.end === 'tete' ? { c: [sx * lamX, aileH - lamT / 2 + 1, e.s * (L / 2 + plankThick / 2)], s: [lamW + 0.3, lamT + 2, plankThick + 2] } : null,
+                    poly3: {
+                        pts: [
+                            [sx * (W_total / 2 - plankLar), aileH, e.s * L / 2],
+                            [sx * W_total / 2, aileH, e.s * L / 2],
+                            [sx * (W_total / 2 + plankThick), aileH, e.s * (L / 2 + plankThick)],
+                            [sx * (W_total / 2 - plankLar), aileH, e.s * (L / 2 + plankThick)],
+                            [sx * (W_total / 2 - basW), 0, e.s * L / 2],
+                            [sx * W_total / 2, 0, e.s * L / 2],
+                            [sx * (W_total / 2 + plankThick), 0, e.s * (L / 2 + plankThick)],
+                            [sx * (W_total / 2 - basW), 0, e.s * (L / 2 + plankThick)],
+                        ],
+                        faces: flip ? [[3, 2, 1, 0], [7, 6, 5, 4], [4, 5, 1, 0], [2, 6, 7, 3], [5, 6, 2, 1], [3, 7, 4, 0]] : [[1, 2, 3, 0], [7, 6, 5, 4], [4, 5, 1, 0], [2, 6, 7, 3], [5, 6, 2, 1], [3, 7, 4, 0]],
+                    } });
+                pieces.push({ name: 'aile_' + e.end + '_' + (i === 0 ? 'G' : 'D') + '_cote', category: 'frame', material: 'garapa',
+                    size: [plankThick, aileH, plankLar],
+                    poly3: {
+                        pts: [
+                            [sx * W_total / 2, aileH, e.s * (L / 2 + plankThick - plankLar)],
+                            [sx * W_total / 2, aileH, e.s * L / 2],
+                            [sx * (W_total / 2 + plankThick), aileH, e.s * (L / 2 + plankThick)],
+                            [sx * (W_total / 2 + plankThick), aileH, e.s * (L / 2 + plankThick - plankLar)],
+                            [sx * W_total / 2, 0, e.s * (L / 2 + plankThick - basW)],
+                            [sx * W_total / 2, 0, e.s * (L / 2 + plankThick)],
+                            [sx * (W_total / 2 + plankThick), 0, e.s * (L / 2 + plankThick)],
+                            [sx * (W_total / 2 + plankThick), 0, e.s * (L / 2 + plankThick - basW)],
+                        ],
+                        faces: flip ? [[3, 2, 1, 0], [5, 6, 7, 4], [1, 5, 4, 0], [3, 7, 6, 2], [5, 6, 2, 1], [4, 7, 3, 0]] : [[3, 2, 1, 0], [5, 6, 7, 4], [1, 5, 4, 0], [3, 7, 6, 2], [5, 6, 2, 1], [4, 7, 3, 0]],
+                    } });
+            });
+        });
+
+
+        // --- Planches ---
+        // Le plancher couvre les ailes + le retrait voulu (ombre continue autour du plateau)
+        const deckZ = L + 2 * plankThick + 2 * retrait;
+        const numPlanks = Math.floor(deckZ / plankLar);
+        const plankGap = numPlanks > 1 ? (deckZ - numPlanks * plankLar) / (numPlanks - 1) : 0;
+        for (let i = 0; i < numPlanks; i++) {
+            const z = -deckZ / 2 + plankLar / 2 + i * (plankLar + plankGap);
+            pieces.push({ name: 'plank_' + i, category: 'plank', material: 'garapa',
+                size: [plankLen, plankThick, plankLar], position: [0, plankCenterY, z] });
+        }
+
+        // --- Matelas ---
+        pieces.push({ name: 'mattress', category: 'mattress', material: 'mattress',
+            size: [mattressW, mattressH, mattressL], position: [0, mattressY, 0] });
+
+        // --- Tete de lit : 3 planches HORIZONTALES (sens du plancher) inclinees a 15 deg,
+        // appuyees sur l arete arriere du plateau et vissees sur 2 lambourdes 60x40
+        // placees DERRIERE (cachees) aux jonctions des planches.
+        // s = distance le long de l inclinaison depuis l arete arriere du plateau (y=anchorY, z=anchorZ)
+        const tilt = (this.params.inclinaisonTete || 15) * Math.PI / 180;
+        const cs = Math.cos(tilt), sn = Math.sin(tilt);
+        const anchorY = totalHeight + plankThick;
+        const anchorZ = -deckZ / 2;
+        // Position Y-up [x, hauteur, z] : u = direction de la pente (vers le haut, vers l arriere),
+        // n = normale face avant (vers le lit). back = decalage vers l arriere, perpendiculaire a la pente.
+        const posPlane = (s, back) => [
+            0,
+            anchorY + s * cs - back * sn,
+            anchorZ - s * sn - back * cs,
+        ];
+        const headLen = 3 * plankLar + 2 * plankGap;   // hauteur de la tete le long de la pente
+        const headX = lamX;                             // lambourdes de tete dans l axe des lambourdes G/D
+        const bk = plankThick + lamW / 2;               // lambourde derriere les planches (axe)
+
+        // Charniere : sur le dessus d un bras Douglas visse sur la face externe de la traverse haute de tete
+        // (structure interne, pas de masque entre les deux). Le bas de la lambourde est au-dessus du bras.
+        const hingeY = totalHeight + 1;
+        const sB = ((hingeY - anchorY) + bk * sn) / cs;          // s du bas de la lambourde
+        const zB = anchorZ - sB * sn - bk * cs;                  // z du bas de la lambourde (derriere le plateau)
+        const headLamLen = headLen - sB;
+        // Lambourdes G/D prolongees : du pied de lit jusqu a la charniere (axe X) sous la lambourde de tete.
+        // Elles traversent les 2 traverses hautes (mi-bois, memes fentes cote tete et cote pied) ; cote tete
+        // elles passent aussi dans l encoche des ailes.
+        const railLen = L / 2 - zB;
+        [{ k: 'G', x: -lamX }, { k: 'D', x: lamX }].forEach(r => {
+            pieces.push({ name: 'lambourde_' + r.k, category: 'frame', material: 'douglas',
+                size: [lamW, lamT, railLen],
+                position: [r.x, railY, (L / 2 + zB) / 2] });
+        });
+
+        const tete = [
+            { name: 'tete_planche_1', size: [plankLen, plankLar, plankThick], s: plankLar / 2, back: plankThick / 2, mat: 'garapa' },
+            { name: 'tete_planche_2', size: [plankLen, plankLar, plankThick], s: plankLar * 1.5 + plankGap, back: plankThick / 2, mat: 'garapa' },
+            { name: 'tete_planche_3', size: [plankLen, plankLar, plankThick], s: plankLar * 2.5 + 2 * plankGap, back: plankThick / 2, mat: 'garapa' },
+            // 2 lambourdes VERTICALES (dans la pente), uniquement DERRIERE les planches, articulees sur les bras
+            { name: 'tete_lambourde_G', size: [lamT, headLamLen, lamW], x: -headX, s: (sB + headLen) / 2, back: bk, mat: 'douglas' },
+            { name: 'tete_lambourde_D', size: [lamT, headLamLen, lamW], x: headX, s: (sB + headLen) / 2, back: bk, mat: 'douglas' },
+        ];
+        for (const t of tete) {
+            const pos = posPlane(t.s, t.back);
+            // les lames de tete (garapa) suivent la case "Planché" ; les lambourdes restent dans "Lambourdes"
+            pieces.push({ name: t.name, category: t.mat === 'garapa' ? 'plank' : 'frame', material: t.mat, size: t.size, rotX: tilt, position: [t.x || 0, pos[1], pos[2]] });
+        }
+
+        // --- 2 charnieres acier (axe X) : bout de la lambourde G/D <-> pied de la lambourde de tete
+        [-headX, headX].forEach((x, i) => {
+            const k = i === 0 ? 'G' : 'D';
+            pieces.push({ name: 'tete_charniere_' + k, category: 'frame', material: 'steel',
+                size: [lamT, 0.4, 6], position: [x, totalHeight + 0.2, zB] });
+        });
+
+        // --- Pieds : 2 Douglas verticaux derriere la tete, du sol jusqu a la face ARRIERE des lambourdes
+        // (a hauteur de la 2e jonction de planches). Ils reprennent la poussee arriere sur la tete.
+        const strutS = 2 * plankLar + plankGap / 2;
+        const tp = posPlane(strutS, bk + lamW / 2);                 // face arriere de la lambourde
+        // Pieds VERTICAUX : face avant (z) au contact de la face arriere de la lambourde, sommet a tp[1]
+        const strutLen = tp[1];
+        [-headX, headX].forEach((x, i) => {
+            pieces.push({ name: 'tete_pied_' + (i === 0 ? 'G' : 'D'), category: 'frame', material: 'douglas',
+                size: [lamT, strutLen, lamW], position: [x, strutLen / 2, tp[2] - lamW / 2] });
+        });
+
+        this._derived = { numPlanks, plankGap, vertH, aileH, strutLen, headLen, headLamLen, railLen };
+        this.pieces = pieces;
+        return pieces;
+    }
+
+    getCutList() {
+        const { L, plankLen, W_total } = this.params;
+        const { plankLar, plankThick } = this.constants;
+        const { numPlanks, vertH, aileH, strutLen, headLamLen, railLen } = this._derived;
+
+        const stdPlank = 250;
+        const stdLam = 300;
+
+        // Garapa : planches + 3 planches de tete + 8 ailes
+        const allGarapa = [];
+        for (let i = 0; i < numPlanks + 3; i++) allGarapa.push(plankLen);
+        for (let i = 0; i < 8; i++) allGarapa.push(aileH);
+        const sortedGarapa = [...allGarapa].sort((a, b) => b - a);
+        let garapaBars = [];
+        sortedGarapa.forEach(len => {
+            let placed = false;
+            for (let b of garapaBars) {
+                if (b.rem >= len) { b.rem -= len; placed = true; break; }
+            }
+            if (!placed) garapaBars.push({ rem: stdPlank - len });
+        });
+
+        // Douglas 60x40 : 3 lambourdes + 2 traverses hautes + 4 montants + 2 lambourdes de tete
+        const allLens = [L, railLen, railLen, W_total, W_total, headLamLen, headLamLen, vertH, vertH, vertH, vertH, strutLen, strutLen];
+        const sortedLens = [...allLens].sort((a, b) => b - a);
+        let bars = [];
+        sortedLens.forEach(len => {
+            let placed = false;
+            for (let b of bars) {
+                if (b.rem >= len) { b.rem -= len; b.cnt++; placed = true; break; }
+            }
+            if (!placed) bars.push({ rem: stdLam - len, cnt: 1 });
+        });
+
+        return {
+            categories: [
+                {
+                    name: 'Garapa 140×21',
+                    pieces: [
+                        { n: numPlanks, dims: plankLen + '×' + plankLar + '×' + plankThick + ' cm  (planches)' },
+                        { n: 3, dims: plankLen + '×' + plankLar + '×' + plankThick + ' cm  (tête de lit)' },
+                        { n: 8, dims: aileH.toFixed(0) + ' haut, 14→8 large × ' + plankThick + ' cm  (ailes pieds, trapèzes)' },
+                    ],
+                    bars: garapaBars.length, barLength: stdPlank,
+                },
+                {
+                    name: 'Douglas 60×40 (lambourdes + structure)',
+                    pieces: [
+                        { n: 1, dims: L + '×60×40 mm  (lambourde centrale)' },
+                        { n: 2, dims: railLen.toFixed(1) + '×60×40 mm  (lambourdes G/D prolongées, charnière tête)' },
+                        { n: 2, dims: W_total + '×60×40 mm  (traverses hautes)' },
+                        { n: 2, dims: headLamLen.toFixed(0) + '×60×40 mm  (tête lambourdes verticales)' },
+                        { n: 4, dims: vertH.toFixed(0) + '×60×40 mm  (montants)' },
+                        { n: 2, dims: strutLen.toFixed(0) + '×60×40 mm  (pieds de tête)' },
+                    ],
+                    bars: bars.length, barLength: stdLam,
+                },
+            ],
+        };
+    }
+
+    getCost() {
+        const { L, plankLen, W_total } = this.params;
+        const { plankLar, lamW } = this.constants;
+        const { numPlanks, vertH, aileH, strutLen, headLamLen, railLen } = this._derived;
+
+        const pricePlank = 69;   // €/m²
+        const priceLam = 3;      // €/ml (Douglas 60x40 — a ajuster)
+        const tva = 0.20;
+
+        // Garapa : planches + 3 planches de tete + 8 ailes
+        const plankMeters = (numPlanks * plankLen + 3 * plankLen + 8 * aileH) / 100;
+        const plankSqm = plankMeters * (plankLar / 100);
+        const plankHT = plankSqm * pricePlank;
+
+        const frameMeters = (L + 2 * railLen + 2 * W_total + 4 * vertH + 2 * headLamLen + 2 * strutLen) / 100;
+        const frameSqm = frameMeters * (lamW / 100);
+        const frameHT = frameMeters * priceLam;
+
+        const totalHT = plankHT + frameHT;
+        const totalTTC = totalHT * (1 + tva);
+
+        return { plankMeters, plankSqm, plankHT, frameMeters, frameSqm, frameHT, totalHT, totalTTC };
+    }
+}
+
+// ======================================================================
+// LAYER 2: Viewer + Export — les solides JSCAD servent aux deux
+// ======================================================================
+
+const COLORS = {
+    douglas: [0.93, 0.84, 0.68, 1],
+    garapa: [0.79, 0.66, 0.30, 1],
+    mattress: [0.96, 0.94, 0.91, 1],
+    steel: [0.55, 0.57, 0.6, 1],
+};
+
+// pieces (cm, Y-up) -> solides JSCAD (Z-up, echelle donnee)
+// jeu (cm par face) : reduit chaque piece pour creer un espace visible entre elles (viewer uniquement)
+// exact=true : ignore dispSize (utilise la longueur reelle, pour le STL)
+function buildSolids(pieces, scale, filter, jeu = 0, exact = false) {
+    return pieces.filter(filter).map(p => {
+        const pos0 = p.position || [0, 0, 0];
+        // dispShiftZ : recentre la piece raccourcie a l affichage (viewer seulement)
+        const pos = (!exact && p.dispSize && p.dispShiftZ) ? [pos0[0], pos0[1], pos0[2] + p.dispShiftZ] : pos0;
+        let g;
+        if (p.poly3) {
+            // Piece polyedrique (ailes trapèzes) : orientation des faces automatique
+            // (normale de chaque face vers l exterieur) + jeu par reduction vers le centroide
+            const k = Math.max(1 - 2 * jeu / 40, 0.5);
+            const pts = p.poly3.pts.map(v => [
+                v[0] * scale,
+                v[2] * scale,   // plan z -> Z-up
+                v[1] * scale,   // hauteur -> Z-up Z
+            ]);
+            const c = [0, 0, 0];
+            pts.forEach(v => { c[0] += v[0] / pts.length; c[1] += v[1] / pts.length; c[2] += v[2] / pts.length; });
+            const pts2 = pts.map(v => [
+                c[0] + (v[0] - c[0]) * k,
+                c[1] + (v[1] - c[1]) * k,
+                c[2] + (v[2] - c[2]) * k,
+            ]);
+            const faces = p.poly3.faces.map(f => {
+                const vs = f.map(i => pts2[i]);
+                let n = [0, 0, 0];
+                for (let i = 0; i < vs.length; i++) {
+                    const a = vs[i], b = vs[(i + 1) % vs.length];
+                    n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+                    n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+                    n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+                }
+                const fc = [0, 0, 0];
+                vs.forEach(v2 => { fc[0] += v2[0] / vs.length; fc[1] += v2[1] / vs.length; fc[2] += v2[2] / vs.length; });
+                const dot = n[0] * (fc[0] - c[0]) + n[1] * (fc[1] - c[1]) + n[2] * (fc[2] - c[2]);
+                return dot < 0 ? [...f].reverse() : [...f];
+            });
+            g = primitives.polyhedron({ points: pts2, faces });
+            // Encoche (repere Y-up de la piece -> Z-up) pour le passage d une lambourde
+            const notchSolid = p.notch && primitives.cuboid({
+                center: [p.notch.c[0] * scale, p.notch.c[2] * scale, p.notch.c[1] * scale],
+                size: [p.notch.s[0] * scale, p.notch.s[2] * scale, p.notch.s[1] * scale],
+            });
+            // Orientation globale : volume signe positif (sinon inversion de toutes les faces)
+            let vol = 0;
+            for (const f of g.polygons) {
+                for (let i = 1; i < f.vertices.length - 1; i++) {
+                    const a = f.vertices[0], b = f.vertices[i], c2 = f.vertices[i + 1];
+                    vol += (a[0] * (b[1] * c2[2] - b[2] * c2[1]) - b[0] * (a[1] * c2[2] - a[2] * c2[1]) + c2[0] * (a[1] * b[2] - a[2] * b[1])) / 6;
+                }
+            }
+            if (vol < 0) {
+                g = Object.assign({}, g, { polygons: g.polygons.map(f => Object.assign({}, f, { vertices: [...f.vertices].reverse() })) });
+            }
+            if (notchSolid) {
+                try { g = booleans.subtract(g, notchSolid); } catch (err) { console.warn('encoche ignoree', p.name, err); }
+            }
+        } else {
+            const size = (exact || !p.dispSize) ? p.size : p.dispSize;
+            g = primitives.cuboid({
+                size: [
+                    Math.max((size[0] - 2 * jeu) * scale, 0.1),
+                    Math.max((size[2] - 2 * jeu) * scale, 0.1),
+                    Math.max((size[1] - 2 * jeu) * scale, 0.1),
+                ],
+            });
+            if (p.rotX) g = transforms.rotateX(p.rotX, g);
+        }
+        g = transforms.translate([pos[0] * scale, pos[2] * scale, pos[1] * scale], g);
+        if (p.viewNotches && !exact) {
+            for (const n of p.viewNotches) {
+                try {
+                    g = booleans.subtract(g, primitives.cuboid({
+                        center: [n.c[0] * scale, n.c[2] * scale, n.c[1] * scale],
+                        size: [n.s[0] * scale, n.s[2] * scale, n.s[1] * scale],
+                    }));
+                } catch (err) { console.warn('fente ignoree', p.name, err); }
+            }
+        }
+        // bake les transformations dans les polygones : viewer, STL et exports coherents
+        const m = g.transforms;
+        const xf = v => [
+            m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12],
+            m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13],
+            m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14],
+        ];
+        g = Object.assign({}, g, {
+            polygons: g.polygons.map(f => ({ vertices: f.vertices.map(xf) })),
+            transforms: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],   // identite (neutre)
+        });
+        return colors.colorize(COLORS[p.material], g);
+    });
+}
+
+// --- Camera orbitale (Z-up) ---
+const TARGET = [0, 0, 120];
+let orbitRadius = 640, orbitTheta = -0.75, orbitPhi = 0.95;
+const camera = Object.assign({}, cameras.perspective.defaults);
+
+function applyOrbit() {
+    const sp = Math.sin(orbitPhi);
+    camera.position = [
+        TARGET[0] + orbitRadius * sp * Math.sin(orbitTheta),
+        TARGET[1] + orbitRadius * sp * Math.cos(orbitTheta),
+        TARGET[2] + orbitRadius * Math.cos(orbitPhi),
+    ];
+    cameras.perspective.update(camera, camera);
+}
+
+// --- Renderer ---
+const viewerDiv = document.getElementById('viewer');
+const GRID = {
+    visuals: { drawCmd: 'drawGrid', show: true },
+    size: [600, 600],
+    ticks: [50, 10],
+};
+const options = {
+    glOptions: { container: viewerDiv },
+    camera,
+    drawCommands: {
+        drawAxis: drawCommands.drawAxis,
+        drawGrid: drawCommands.drawGrid,
+        drawLines: drawCommands.drawLines,
+        drawMesh: drawCommands.drawMesh,
+    },
+    entities: [GRID],
+};
+
+// Dimensionne le canvas et la projection depuis le conteneur (pas la fenetre) : le ratio reste
+// juste a l ecran comme a l impression
+function sizeViewer() {
+    const w = viewerDiv.clientWidth || window.innerWidth;
+    const h = viewerDiv.clientHeight || window.innerHeight;
+    cameras.perspective.setProjection(camera, camera, { width: w, height: h });
+    cameras.perspective.update(camera, camera);
+    const canvas = viewerDiv.querySelector('canvas');
+    if (canvas) { canvas.width = w; canvas.height = h; }
+}
+cameras.perspective.update(camera, camera);
+applyOrbit();
+const render = prepareRender(options);
+sizeViewer();   // dimensionne le canvas des le demarrage (sinon 0x0 jusqu'au premier resize)
+
+// ======================================================================
+// APP WIRING: BedModel ↔ Viewer ↔ UI
+// ======================================================================
+
+const bedModel = new BedModel();
+const ui = {
+    showPlanks: document.getElementById('showPlanks'),
+    showFrame: document.getElementById('showFrame'),
+    showMattress: document.getElementById('showMattress'),
+};
+
+function updateEntities() {
+    const filter = p =>
+        (p.category === 'plank' && ui.showPlanks.checked) ||
+        (p.category === 'frame' && ui.showFrame.checked) ||
+        (p.category === 'mattress' && ui.showMattress.checked);
+    // jeu de 0.1 cm par face : espace visible entre les pieces (affichage seul, STL exact)
+    options.entities = [GRID, ...entitiesFromSolids({}, buildSolids(bedModel.pieces, 1, filter, 0.1))];
+}
+
+function updateInfoPanels() {
+    const cutList = bedModel.getCutList();
+    const cost = bedModel.getCost();
+
+    document.getElementById('plankInfo').innerHTML = cutList.categories.map(cat =>
+        '<b>' + cat.name + '</b><br>' +
+        cat.pieces.map(p => '&nbsp;&nbsp;' + p.n + '× ' + p.dims).join('<br>') +
+        '<br><span style="color:#99ff99">' +
+        (cat === cutList.categories[0] ? cost.plankMeters : cost.frameMeters).toFixed(1) +
+        ' ml · ' +
+        (cat === cutList.categories[0] ? cost.plankSqm : cost.frameSqm).toFixed(3) +
+        ' m² · ' +
+        ((cat === cutList.categories[0] ? cost.plankHT : cost.frameHT) * 1.2).toFixed(2) +
+        '€ TTC</span>'
+    ).join('<br><br>');
+
+    document.getElementById('costDisplay').innerHTML =
+        'Total: ' + (cost.plankMeters + cost.frameMeters).toFixed(1) + ' ml · ' +
+        (cost.plankSqm + cost.frameSqm).toFixed(3) + ' m²<br>' +
+        cost.totalHT.toFixed(2) + '€ HT / ' + cost.totalTTC.toFixed(2) + '€ TTC';
+}
+
+function rebuild() {
+    bedModel.recalc();
+    updateEntities();
+    updateInfoPanels();
+}
+
+// --- Export STL via le noyau JSCAD : bois seulement, mm, echelle reelle ---
+function exportSTL() {
+    const wood = buildSolids(bedModel.pieces, 10, p => p.category !== 'mattress' && p.material !== 'steel', 0, true);
+    const solid = booleans.union(wood);
+    const chunks = serializeSTL({ binary: true }, solid);
+    const blob = new Blob(chunks, { type: 'model/stl' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'lit_karup_' + bedModel.params.W_total + 'x' + bedModel.params.L + '.stl';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+document.getElementById('exportStl').addEventListener('click', exportSTL);
+
+rebuild();
+
+// --- Initial visibility: only lambourdes shown ---
+ui.showPlanks.checked = false;
+ui.showMattress.checked = false;
+updateEntities();
+
+// --- Checkboxes ---
+ui.showPlanks.addEventListener('change', updateEntities);
+ui.showFrame.addEventListener('change', updateEntities);
+ui.showMattress.addEventListener('change', updateEntities);
+
+// --- Sliders ---
+const sliders = {
+    sliderFootH:    { param: 'totalHeight', display: 'valFootH',    unit: ' cm' },
+    sliderPlankLen: { param: 'plankLen',    display: 'valPlankLen', unit: ' cm' },
+    sliderBedW:     { param: 'W_total',     display: 'valBedW',     unit: ' cm' },
+    sliderBedL:     { param: 'L',           display: 'valBedL',     unit: ' cm' },
+};
+
+Object.entries(sliders).forEach(([id, cfg]) => {
+    document.getElementById(id).addEventListener('input', (e) => {
+        bedModel.params[cfg.param] = parseFloat(e.target.value);
+        document.getElementById(cfg.display).textContent = e.target.value + cfg.unit;
+        rebuild();
+    });
+});
+
+// --- Souris : orbite + zoom ---
+let dragPos = null;
+viewerDiv.addEventListener('pointerdown', (e) => { dragPos = { x: e.clientX, y: e.clientY }; });
+window.addEventListener('pointerup', () => { dragPos = null; });
+window.addEventListener('pointermove', (e) => {
+    if (!dragPos) return;
+    orbitTheta -= (e.clientX - dragPos.x) * 0.008;
+    orbitPhi = Math.max(0.05, Math.min(Math.PI / 2 + 0.2, orbitPhi - (e.clientY - dragPos.y) * 0.008));
+    dragPos = { x: e.clientX, y: e.clientY };
+    applyOrbit();
+});
+viewerDiv.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    orbitRadius = Math.max(60, Math.min(1500, orbitRadius * (e.deltaY > 0 ? 1.1 : 1 / 1.1)));
+    applyOrbit();
+}, { passive: false });
+
+// --- Resize ---
+new ResizeObserver(sizeViewer).observe(viewerDiv);   // fenetre redimensionnee ou mise en page d impression
+window.addEventListener('beforeprint', sizeViewer);
+window.addEventListener('afterprint', () => { document.body.classList.remove('print-sheet'); sizeViewer(); });
+
+// Bouton : imprime seulement la boite d infos (fond blanc) ; Ctrl+P garde viewer + boite
+document.getElementById('printSheet').addEventListener('click', () => {
+    document.body.classList.add('print-sheet');
+    window.print();
+});
+
+// --- Animation loop ---
+function animate() {
+    requestAnimationFrame(animate);
+    render(options);
+}
+animate();
+
+</script>
+</body>
+</html>
